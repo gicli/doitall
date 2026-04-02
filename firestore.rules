@@ -1,0 +1,90 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: bucketItems
+    // Document ID: auto-generated
+    // Fields:
+    //   - text: string (required, 1-500 chars)
+    //   - completed: boolean (required)
+    //   - createdBy: string (required, matches auth.uid)
+    //   - createdByName: string (required, 1-100 chars)
+    //   - createdAt: timestamp (required)
+    //   - completedBy: string (optional)
+    //   - completedByName: string (optional)
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isValidBucketItem(data, isUpdate) {
+      return data.keys().hasAll(['text', 'completed', 'createdBy', 'createdByName', 'createdAt']) &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 500 &&
+             data.completed is bool &&
+             data.createdBy is string && 
+             (isUpdate ? true : data.createdBy == request.auth.uid) &&
+             data.createdByName is string && data.createdByName.size() > 0 && data.createdByName.size() <= 100 &&
+             data.createdAt is timestamp;
+    }
+
+    function isValidComment(data) {
+      return data.keys().hasAll(['text', 'createdBy', 'createdByName', 'createdAt']) &&
+             data.text is string && data.text.size() > 0 && data.text.size() <= 1000 &&
+             data.createdBy is string && data.createdBy == request.auth.uid &&
+             data.createdByName is string && data.createdByName.size() > 0 && data.createdByName.size() <= 100 &&
+             data.createdAt is timestamp;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "wongi3426@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (isOwner(userId) || isAdmin());
+      allow create: if isAuthenticated() && isOwner(userId) && request.resource.data.role == 'user';
+      allow update: if isAuthenticated() && ((isOwner(userId) && request.resource.data.role == resource.data.role) || isAdmin());
+    }
+
+    match /bucketItems/{itemId} {
+      allow read: if isAuthenticated();
+      
+      allow create: if isAuthenticated() && 
+                      isValidBucketItem(request.resource.data, false) &&
+                      request.resource.data.completed == false;
+
+      allow update: if isAuthenticated() && 
+                      isValidBucketItem(request.resource.data, true) &&
+                      request.resource.data.createdBy == resource.data.createdBy &&
+                      request.resource.data.createdAt == resource.data.createdAt &&
+                      // Only allow toggling 'completed' and setting completion info, or updating text by owner
+                      (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['completed', 'completedBy', 'completedByName']) ||
+                       (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['text']) && resource.data.createdBy == request.auth.uid) ||
+                       isAdmin());
+
+      allow delete: if isAuthenticated() && (resource.data.createdBy == request.auth.uid || isAdmin());
+
+      match /comments/{commentId} {
+        allow read: if isAuthenticated();
+        allow create: if isAuthenticated() && isValidComment(request.resource.data);
+        allow update: if isAuthenticated() && 
+                        isValidComment(request.resource.data) &&
+                        resource.data.createdBy == request.auth.uid &&
+                        request.resource.data.createdBy == resource.data.createdBy &&
+                        request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if isAuthenticated() && (resource.data.createdBy == request.auth.uid || isAdmin());
+      }
+    }
+  }
+}
